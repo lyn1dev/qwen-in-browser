@@ -4,21 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Qwen3 0.6B — browser inference</title>
-<meta name="description" content="Qwen3 0.6B running entirely in your browser on WebGPU. Weights are cached locally after the first load.">
+<meta name="description" content="Qwen3 0.6B running entirely in your browser. Uses WebGPU when the GPU supports it and falls back automatically.">
 <style>
   :root {
-    --bg: #0a0b0d;
-    --panel: #101216;
-    --panel-2: #16191e;
-    --line: #22262d;
-    --line-soft: #1a1e24;
-    --fg: #e9eef4;
-    --fg-dim: #9aa5b4;
-    --fg-faint: #626d7c;
-    --accent: #5eead4;
-    --accent-dim: #2dd4bf;
-    --danger: #f87171;
-    --warn: #fbbf24;
+    --canvas: oklch(0.150000 0.030000 254.000);
+    --surface: oklch(0.170000 0.032000 252.500);
+    --surface-raised: oklch(0.198000 0.034000 251.500);
+    --surface-overlay: oklch(0.225000 0.036000 252.500);
+    --text: oklch(0.985000 0.006000 250.000);
+    --text-muted: oklch(0.660054 0.010341 273.310);
+    --secondary-label: oklch(0.660054 0.010341 273.310);
+    --muted: oklch(0.249044 0.042281 246.065);
+    --muted-fg: oklch(0.700239 0.014665 261.588);
+    --border: oklch(0.245000 0.042000 249.000);
+    --accent: oklch(0.760000 0.128000 241.500);
+    --accent-fg: oklch(0.224667 0.031311 328.979);
+    --secondary: oklch(0.279806 0.049617 244.911);
+    --placeholder: oklch(0.730301 0.009173 281.271);
+    --code-bg: oklch(0.185000 0.030000 252.000);
+    --error: oklch(0.655108 0.221148 23.473);
+    --warning: oklch(0.772406 0.172798 65.367);
+    --scrollbar: oklch(0.586130 0.012959 267.220);
+    --scrollbar-hover: oklch(0.681569 0.010909 276.465);
     --radius: 12px;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -30,27 +37,50 @@
 
   body {
     margin: 0;
-    background:
-      radial-gradient(1100px 520px at 50% -220px, #16202a 0%, transparent 70%),
-      var(--bg);
-    color: var(--fg);
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--canvas);
+    color: var(--text);
     font-family: var(--sans);
     font-size: 15px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     display: flex;
-    flex-direction: column;
-    min-height: 100%;
+    justify-content: center;
   }
+
+  /* ---------- scrollbars ---------- */
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+
+  ::-webkit-scrollbar { width: 12px; height: 12px; }
+
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--scrollbar) 45%, transparent);
+    border-radius: 99px;
+    border: 4px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--scrollbar-hover) 75%, transparent);
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-corner { background: transparent; }
 
   .shell {
     width: 100%;
-    max-width: 780px;
-    margin: 0 auto;
+    max-width: 760px;
     padding: 0 20px;
     display: flex;
     flex-direction: column;
-    flex: 1;
+    height: 100%;
     min-height: 0;
   }
 
@@ -61,22 +91,23 @@
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 26px 0 18px;
+    padding: 22px 0 16px;
     flex-wrap: wrap;
+    flex: none;
   }
 
   .brand { display: flex; align-items: baseline; gap: 10px; }
 
   .brand h1 {
     margin: 0;
-    font-size: 17px;
+    font-size: 16px;
     font-weight: 600;
     letter-spacing: -0.01em;
   }
 
   .brand span {
-    font-size: 12px;
-    color: var(--fg-faint);
+    font-size: 11.5px;
+    color: var(--secondary-label);
     font-family: var(--mono);
     letter-spacing: 0.02em;
   }
@@ -87,33 +118,40 @@
     gap: 7px;
     font-family: var(--mono);
     font-size: 11px;
-    color: var(--fg-dim);
-    background: var(--panel);
-    border: 1px solid var(--line);
+    color: var(--muted-fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 999px;
     padding: 5px 11px;
     max-width: 100%;
+    min-width: 0;
+  }
+
+  .gpu > span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .dot {
     width: 6px; height: 6px;
     border-radius: 50%;
-    background: var(--fg-faint);
+    background: var(--secondary-label);
     flex: none;
   }
-  .dot.ok { background: var(--accent); box-shadow: 0 0 8px rgba(94,234,212,.55); }
-  .dot.bad { background: var(--danger); }
-  .dot.wait { background: var(--warn); }
+  .dot.ok { background: var(--accent); }
+  .dot.warn { background: var(--warning); }
+  .dot.bad { background: var(--error); }
 
   /* ---------- loader ---------- */
 
   .loader {
-    background: var(--panel);
-    border: 1px solid var(--line);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 18px 20px;
-    margin-bottom: 16px;
-    transition: opacity .3s, transform .3s;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+    flex: none;
   }
 
   .loader.hidden { display: none; }
@@ -122,25 +160,33 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 14px;
     flex-wrap: wrap;
   }
 
-  .loader-title { font-weight: 550; font-size: 14px; }
+  .loader-title { font-weight: 550; font-size: 13.5px; }
 
   .loader-sub {
-    color: var(--fg-faint);
-    font-size: 12.5px;
+    color: var(--secondary-label);
+    font-size: 12px;
     margin-top: 3px;
     font-family: var(--mono);
+    overflow-wrap: anywhere;
+  }
+
+  .loader-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
   }
 
   .track {
-    height: 4px;
+    height: 3px;
     border-radius: 99px;
-    background: var(--line-soft);
+    background: var(--muted);
     overflow: hidden;
-    margin-top: 15px;
+    margin-top: 13px;
   }
 
   .track > i {
@@ -148,7 +194,7 @@
     height: 100%;
     width: 0;
     border-radius: 99px;
-    background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    background: var(--accent);
     transition: width .25s ease;
   }
 
@@ -162,114 +208,205 @@
     100% { transform: translateX(350%); }
   }
 
-  /* ---------- buttons ---------- */
+  /* ---------- controls ---------- */
 
   button {
     font: inherit;
-    font-size: 13.5px;
+    font-size: 13px;
     font-weight: 550;
     cursor: pointer;
     border-radius: 9px;
     border: 1px solid transparent;
-    padding: 9px 16px;
+    padding: 8px 15px;
     transition: background .15s, border-color .15s, opacity .15s, transform .08s;
     white-space: nowrap;
   }
 
   button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
 
-  button:disabled { opacity: .4; cursor: not-allowed; }
-
-  .btn-primary {
-    background: var(--accent);
-    color: #04211c;
-  }
-  .btn-primary:hover:not(:disabled) { background: #7df0dd; }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); }
+  .btn-primary:hover:not(:disabled) { background: oklch(0.815308 0.096174 199.862); }
 
   .btn-ghost {
-    background: var(--panel-2);
-    color: var(--fg);
-    border-color: var(--line);
+    background: var(--secondary);
+    color: var(--text);
+    border-color: var(--border);
   }
-  .btn-ghost:hover:not(:disabled) { border-color: #333a44; background: #1b1f26; }
+  .btn-ghost:hover:not(:disabled) { background: var(--surface-overlay); border-color: var(--muted-fg); }
+
+  select {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--text);
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 8px 7px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  select:focus { border-color: var(--accent); }
 
   /* ---------- chat ---------- */
 
   .chat {
     flex: 1;
-    min-height: 300px;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 4px 0 18px;
-    overflow-y: auto;
+    gap: 20px;
+    padding: 4px 4px 20px 0;
   }
 
-  .msg {
-    display: flex;
-    gap: 11px;
-    animation: rise .22s ease-out;
-  }
+  .msg { display: flex; animation: rise .2s ease-out; min-width: 0; }
 
   @keyframes rise {
-    from { opacity: 0; transform: translateY(5px); }
+    from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: none; }
   }
 
-  .avatar {
-    width: 26px; height: 26px;
-    border-radius: 7px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    font-size: 11px;
-    font-weight: 700;
-    font-family: var(--mono);
-    margin-top: 2px;
-  }
-
-  .msg.user .avatar {
-    background: var(--panel-2);
-    border: 1px solid var(--line);
-    color: var(--fg-dim);
-  }
-
-  .msg.bot .avatar {
-    background: rgba(94,234,212,.12);
-    border: 1px solid rgba(94,234,212,.28);
-    color: var(--accent);
-  }
-
-  .bubble {
-    flex: 1;
-    min-width: 0;
+  .msg.user {
+    align-self: flex-end;
+    max-width: 88%;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 9px 14px;
     white-space: pre-wrap;
-    word-wrap: break-word;
     overflow-wrap: anywhere;
   }
 
-  .msg.user .bubble { color: var(--fg); }
-
-  .msg.bot .bubble { color: #dbe3ec; }
+  .msg.bot {
+    align-self: stretch;
+    min-width: 0;
+    max-width: 100%;
+    color: var(--text);
+  }
 
   .cursor {
     display: inline-block;
-    width: 7px; height: 15px;
+    width: 2px; height: 16px;
     background: var(--accent);
-    vertical-align: -2px;
-    margin-left: 1px;
+    vertical-align: -3px;
+    margin-left: 2px;
     animation: blink 1s steps(2, start) infinite;
-    border-radius: 1px;
   }
 
   @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---------- markdown ---------- */
+
+  .md { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+
+  .md p { margin: 0 0 11px; }
+
+  .md h3, .md h4, .md h5, .md h6 {
+    margin: 18px 0 8px;
+    line-height: 1.35;
+    font-weight: 600;
+  }
+  .md h3 { font-size: 16px; }
+  .md h4 { font-size: 15px; }
+  .md h5, .md h6 { font-size: 14px; }
+
+  .md ul, .md ol { margin: 0 0 11px; padding-left: 22px; }
+  .md li { margin: 3px 0; }
+  .md li::marker { color: var(--muted-fg); }
+
+  .md blockquote {
+    margin: 11px 0;
+    padding: 2px 0 2px 13px;
+    border-left: 2px solid var(--accent);
+    color: var(--muted-fg);
+  }
+
+  .md hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+  }
+
+  .md a { color: var(--accent); text-decoration: none; }
+  .md a:hover { text-decoration: underline; }
+
+  .md strong { color: var(--text); font-weight: 650; }
+
+  .md code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+
+  .code-block {
+    margin: 12px 0;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    max-width: 100%;
+  }
+
+  .code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 5px 8px 5px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--secondary-label);
+  }
+
+  .code-head .copy {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 9px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted-fg);
+    border-radius: 6px;
+  }
+
+  .code-head .copy:hover {
+    color: var(--text);
+    border-color: var(--muted-fg);
+    background: var(--surface-overlay);
+  }
+
+  .code-block pre {
+    margin: 0;
+    padding: 12px 14px;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .code-block pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: pre;
+  }
 
   /* ---------- empty state ---------- */
 
   .empty {
     margin: auto 0;
     text-align: center;
-    padding: 26px 0 32px;
+    padding: 20px 0 28px;
   }
 
   .empty.hidden { display: none; }
@@ -278,13 +415,13 @@
     margin: 0 0 6px;
     font-size: 15px;
     font-weight: 550;
-    color: var(--fg-dim);
+    color: var(--muted-fg);
   }
 
   .empty p {
     margin: 0 0 20px;
     font-size: 13px;
-    color: var(--fg-faint);
+    color: var(--secondary-label);
   }
 
   .chips {
@@ -297,53 +434,51 @@
   .chip {
     font-size: 12.5px;
     font-weight: 450;
-    color: var(--fg-dim);
-    background: var(--panel);
-    border: 1px solid var(--line);
+    color: var(--muted-fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 999px;
     padding: 7px 14px;
   }
 
-  .chip:hover { border-color: #333a44; color: var(--fg); background: var(--panel-2); }
+  .chip:hover { border-color: var(--muted-fg); color: var(--text); background: var(--surface-raised); }
 
   /* ---------- composer ---------- */
 
   .composer {
-    position: sticky;
-    bottom: 0;
-    background: linear-gradient(to top, var(--bg) 65%, transparent);
-    padding: 12px 0 20px;
+    flex: none;
+    padding: 10px 0 16px;
   }
 
   .input-wrap {
     display: flex;
     align-items: flex-end;
     gap: 10px;
-    background: var(--panel);
-    border: 1px solid var(--line);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 10px 10px 10px 14px;
+    padding: 9px 9px 9px 14px;
     transition: border-color .15s;
   }
 
-  .input-wrap:focus-within { border-color: #2f3742; }
+  .input-wrap:focus-within { border-color: var(--accent); }
 
   textarea {
     flex: 1;
     font: inherit;
     font-size: 14.5px;
     line-height: 1.55;
-    color: var(--fg);
+    color: var(--text);
     background: none;
     border: none;
     outline: none;
     resize: none;
     padding: 4px 0;
-    max-height: 160px;
-    min-height: 28px;
+    max-height: 150px;
+    min-height: 27px;
   }
 
-  textarea::placeholder { color: var(--fg-faint); }
+  textarea::placeholder { color: var(--placeholder); }
 
   .actions { display: flex; gap: 8px; align-items: center; }
 
@@ -353,24 +488,23 @@
     justify-content: space-between;
     gap: 12px;
     font-family: var(--mono);
-    font-size: 11px;
-    color: var(--fg-faint);
-    padding: 9px 4px 0;
-    min-height: 22px;
+    font-size: 10.5px;
+    color: var(--secondary-label);
+    padding: 8px 3px 0;
+    min-height: 20px;
     flex-wrap: wrap;
   }
 
-  .stats .right { color: var(--fg-dim); }
-
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  .stats .right { color: var(--muted-fg); }
 
   @media (max-width: 560px) {
-    .shell { padding: 0 14px; }
-    header { padding: 18px 0 14px; }
+    .shell { padding: 0 13px; }
+    header { padding: 15px 0 12px; }
     .brand h1 { font-size: 15px; }
     .brand span { display: none; }
-    .chat { min-height: 220px; }
+    .loader-actions { width: 100%; }
+    .loader-actions button { flex: 1; }
+    .msg.user { max-width: 92%; }
   }
 </style>
 </head>
@@ -384,28 +518,35 @@
     </div>
     <div class="gpu" id="gpuBadge">
       <span class="dot" id="gpuDot"></span>
-      <span id="gpuLabel">checking WebGPU…</span>
+      <span id="gpuLabel">probing hardware…</span>
     </div>
   </header>
 
   <div class="loader" id="loader">
     <div class="loader-top">
       <div>
-        <div class="loader-title" id="loaderTitle">Qwen3 0.6B · 4-bit</div>
-        <div class="loader-sub" id="loaderSub">570 MB — fetched once, then cached by the browser</div>
+        <div class="loader-title" id="loaderTitle">Qwen3 0.6B · quantized</div>
+        <div class="loader-sub" id="loaderSub">picks the fastest backend your hardware supports</div>
       </div>
-      <button class="btn-primary" id="loadBtn">Load model</button>
+      <div class="loader-actions">
+        <select id="devicePref" title="Backend">
+          <option value="auto">Auto</option>
+          <option value="webgpu">GPU only</option>
+          <option value="wasm">CPU only</option>
+        </select>
+        <button class="btn-primary" id="loadBtn">Load model</button>
+      </div>
     </div>
     <div class="track" id="track"><i id="bar"></i></div>
   </div>
 
   <div class="chat" id="chat">
     <div class="empty" id="empty">
-      <h2>Runs on your GPU, not a server</h2>
+      <h2>Runs on your machine, not a server</h2>
       <p>No API key, no requests leaving the device.</p>
       <div class="chips">
         <button class="chip" data-p="Explain WebGPU to a backend developer in three sentences.">Explain WebGPU</button>
-        <button class="chip" data-p="Write a haiku about compiling Rust.">Write a haiku</button>
+        <button class="chip" data-p="Write a Python function that retries a request with exponential backoff. Show the code.">Retry with backoff</button>
         <button class="chip" data-p="What are the tradeoffs of running an LLM in the browser?">Browser LLM tradeoffs</button>
         <button class="chip" data-p="Give me three one-line shell commands for finding large files.">Shell one-liners</button>
       </div>
@@ -434,9 +575,9 @@ env.allowLocalModels = false;
 
 const MODEL_ID = "onnx-community/Qwen3-0.6B-ONNX";
 
-// Qwen3 defaults to a reasoning preamble. It cannot be switched off through
-// transformers.js (enable_thinking is dropped by the tokenizer wrapper), so the
-// prompt is assembled by hand with an empty think block. Same effect, ~4x faster.
+// Qwen3 starts every reply with a reasoning preamble. transformers.js drops
+// enable_thinking (both tokenizer_kwargs and chat_template_kwargs are ignored),
+// so prompts are built by hand with an empty think block. Same result, much faster.
 const THINK_OFF = "<|im_start|>assistant\n<think>\n\n</think>\n\n";
 
 const el = (id) => document.getElementById(id);
@@ -444,93 +585,184 @@ const chat = el("chat"), empty = el("empty"), input = el("input");
 const sendBtn = el("sendBtn"), stopBtn = el("stopBtn"), loadBtn = el("loadBtn");
 
 let generator = null;
-let device = "webgpu";
+let backend = null;
 let busy = false;
 let cancelled = false;
 const history = [];
 
-// ---------------------------------------------------------------- device probe
+// ------------------------------------------------------------ capability probe
 
-(async () => {
-  const dot = el("gpuDot"), label = el("gpuLabel");
+const caps = {
+  webgpu: false,
+  fp16: false,
+  maxBuffer: 0,
+  vendor: "",
+  arch: "",
+  desc: "",
+};
 
-  if (!navigator.gpu) {
-    device = "wasm";
-    dot.classList.add("bad");
-    label.textContent = "WebGPU unavailable — CPU fallback";
-    return;
-  }
+async function probe() {
+  if (!navigator.gpu) return caps;
 
   try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      device = "wasm";
-      dot.classList.add("bad");
-      label.textContent = "no GPU adapter — CPU fallback";
-      return;
-    }
+    // high-performance asks for the discrete GPU on hybrid laptops. Where the
+    // platform ignores it (Windows currently does) this is simply a no-op.
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) return caps;
+
+    caps.webgpu = true;
+    // fp16 shader support is what separates the 4-bit fp16 build from the fp32
+    // one. Plenty of integrated and mobile GPUs lack it.
+    caps.fp16 = adapter.features.has("shader-f16");
+    caps.maxBuffer = adapter.limits.maxBufferSize || 0;
+
     const info = adapter.info || {};
-    const bits = [info.vendor, info.architecture].filter(Boolean).join(" ");
-    dot.classList.add("ok");
-    label.textContent = bits ? `WebGPU · ${bits}` : "WebGPU ready";
+    caps.vendor = info.vendor || "";
+    caps.arch = info.architecture || "";
+    caps.desc = info.description || "";
   } catch {
-    device = "wasm";
-    dot.classList.add("bad");
-    label.textContent = "WebGPU probe failed — CPU fallback";
+    caps.webgpu = false;
   }
-})();
 
-// --------------------------------------------------------------------- loading
+  return caps;
+}
 
-function setProgress(pct, text) {
-  const bar = el("bar"), track = el("track");
-  if (pct == null) {
-    track.classList.add("indeterminate");
-    el("loaderSub").textContent = text;
+function renderBadge() {
+  const dot = el("gpuDot"), label = el("gpuLabel");
+
+  if (!caps.webgpu) {
+    dot.classList.add(navigator.gpu ? "bad" : "warn");
+    label.textContent = navigator.gpu ? "no GPU adapter — CPU only" : "no WebGPU — CPU only";
     return;
   }
-  track.classList.remove("indeterminate");
-  bar.style.width = pct + "%";
+
+  const name = [caps.vendor, caps.arch || caps.desc].filter(Boolean).join(" · ") || "adapter";
+  dot.classList.add("ok");
+  label.textContent = caps.fp16 ? `WebGPU · ${name}` : `WebGPU · ${name} (no fp16)`;
+}
+
+// ------------------------------------------------------------------ load plan
+
+// Ordered fallbacks. Each rung is tried only if the one above it fails, so the
+// normal path costs nothing extra.
+function buildPlan(pref) {
+  const gpu = [];
+  if (caps.fp16) gpu.push({ device: "webgpu", dtype: "q4f16", label: "GPU · fp16", size: 570 });
+  gpu.push({ device: "webgpu", dtype: "q4", label: "GPU · fp32", size: 919 });
+
+  // int8 first here: on this repo it is both smaller than the 4-bit build
+  // (619 MB vs 919 MB) and faster on wasm, which skips dequantisation work.
+  const cpu = [
+    { device: "wasm", dtype: "q8", label: "CPU · int8", size: 619 },
+    { device: "wasm", dtype: "q4", label: "CPU · int4", size: 919 },
+  ];
+
+  if (pref === "wasm") return cpu;
+  if (pref === "webgpu") return gpu;
+  return caps.webgpu ? [...gpu, ...cpu] : cpu;
+}
+
+function configureCpu() {
+  try {
+    const wasm = env.backends?.onnx?.wasm;
+    if (!wasm) return;
+    wasm.proxy = false;
+    // Multi-threaded wasm needs cross-origin isolation for SharedArrayBuffer.
+    // GitHub Pages doesn't send COOP/COEP, so this normally lands on 1 thread.
+    wasm.numThreads = self.crossOriginIsolated
+      ? Math.min(4, navigator.hardwareConcurrency || 1)
+      : 1;
+  } catch {
+    /* older runtimes expose a different shape */
+  }
+}
+
+function setProgress(pct, text, indeterminate = false) {
+  const bar = el("bar"), track = el("track");
+  if (indeterminate) {
+    track.classList.add("indeterminate");
+  } else {
+    track.classList.remove("indeterminate");
+    bar.style.width = (pct ?? 0) + "%";
+  }
   if (text) el("loaderSub").textContent = text;
 }
 
+async function createPipeline(step) {
+  if (step.device === "wasm") configureCpu();
+
+  const pipe = await pipeline("text-generation", MODEL_ID, {
+    device: step.device,
+    dtype: step.dtype,
+    progress_callback: (p) => {
+      if (p.status === "progress" && p.total) {
+        const pct = Math.round((p.loaded / p.total) * 100);
+        const file = (p.file || "").split("/").pop();
+        setProgress(pct, `${step.label} · ${file || "weights"} · ${pct}%`);
+      } else if (p.status === "initiate") {
+        const file = (p.file || "").split("/").pop();
+        setProgress(null, `${step.label} · fetching ${file || "weights"}`);
+      } else if (p.status === "done") {
+        setProgress(100, `${step.label} · compiling`);
+      }
+    },
+  });
+
+  // Some drivers create the session happily and only die on the first kernel
+  // launch. A one-token warmup surfaces that here instead of mid-conversation.
+  setProgress(null, `${step.label} · warming up`);
+  await pipe("hi", { max_new_tokens: 1, do_sample: false, return_full_text: false });
+
+  return pipe;
+}
+
 loadBtn.addEventListener("click", async () => {
+  const pref = el("devicePref").value;
+  const plan = buildPlan(pref);
+
   loadBtn.disabled = true;
   loadBtn.textContent = "Loading…";
-  el("statLeft").textContent = "downloading weights";
+  el("devicePref").disabled = true;
+  el("statLeft").textContent = "loading";
   setProgress(0, "starting…");
 
-  try {
-    generator = await pipeline("text-generation", MODEL_ID, {
-      device,
-      dtype: device === "webgpu" ? "q4f16" : "q4",
-      progress_callback: (p) => {
-        if (p.status === "progress" && p.total) {
-          const pct = Math.round((p.loaded / p.total) * 100);
-          const name = (p.file || "").split("/").pop();
-          setProgress(pct, `${name || "weights"} · ${pct}%`);
-        } else if (p.status === "done") {
-          setProgress(100, "ready");
-        } else if (p.status === "initiate") {
-          setProgress(null, `fetching ${(p.file || "").split("/").pop() || "weights"}`);
-        }
-      },
-    });
+  const failures = [];
 
-    el("loader").classList.add("hidden");
-    input.disabled = false;
-    input.placeholder = "Ask anything…";
-    sendBtn.disabled = false;
-    el("statLeft").textContent = device === "webgpu" ? "ready · webgpu" : "ready · cpu";
-    input.focus();
-  } catch (err) {
-    console.error(err);
-    setProgress(null, "load failed — " + (err.message || err));
-    el("loaderSub").style.color = "var(--danger)";
+  for (const step of plan) {
+    try {
+      el("statLeft").textContent = `loading · ${step.label}`;
+      setProgress(0, `${step.label} · ~${step.size} MB`);
+      generator = await createPipeline(step);
+      backend = step;
+      break;
+    } catch (err) {
+      failures.push(`${step.label}: ${(err && err.message) || err}`);
+      console.warn(`[backend] ${step.label} failed`, err);
+      generator = null;
+    }
+  }
+
+  if (!generator) {
+    el("loaderSub").style.color = "var(--error)";
+    el("loaderSub").textContent = "no usable backend — " + (failures.at(-1) || "unknown error");
+    el("loaderTitle").textContent = "Load failed";
+    el("bar").style.width = "0%";
     loadBtn.disabled = false;
     loadBtn.textContent = "Retry";
-    el("statLeft").textContent = "load failed";
+    el("devicePref").disabled = false;
+    el("statLeft").textContent = "failed";
+    console.error(failures.join("\n"));
+    return;
   }
+
+  el("loader").classList.add("hidden");
+  el("devicePref").disabled = false;
+  input.disabled = false;
+  input.placeholder = "Ask anything…";
+  sendBtn.disabled = false;
+  el("statLeft").textContent = `ready · ${backend.label}`;
+  if (failures.length) el("statLeft").title = "fallbacks: " + failures.join("\n");
+  input.focus();
 });
 
 // ------------------------------------------------------------------- prompting
@@ -549,7 +781,160 @@ function buildPrompt(question) {
   return out;
 }
 
-const SPECIAL = /<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>/g;
+// ------------------------------------------------------------------ markdown
+
+const esc = (s) =>
+  String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+// Inline spans. Input is escaped first, so no raw HTML can slip through; code
+// spans are stashed so their contents never get treated as emphasis.
+function inline(s) {
+  let t = esc(s);
+  const spans = [];
+
+  t = t.replace(/`([^`\n]+)`/g, (_, code) => {
+    spans.push(code);
+    return `\u0001${spans.length - 1}\u0001`;
+  });
+
+  t = t.replace(/\*\*(?!\s)([\s\S]+?)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/(^|[\s(>])\*(?!\s)([^*\n]+?)\*/g, "$1<em>$2</em>");
+  t = t.replace(/(^|[\s(>])_(?!\s)([^_\n]+?)_/g, "$1<em>$2</em>");
+  t = t.replace(
+    /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+  );
+
+  return t.replace(/\u0001(\d+)\u0001/g, (_, i) => `<code>${spans[+i]}</code>`);
+}
+
+function codeBlockHtml(lang, code) {
+  const label = esc((lang || "").trim()) || "text";
+  return (
+    '<div class="code-block"><div class="code-head"><span>' +
+    label +
+    '</span><button class="copy" type="button">Copy</button></div>' +
+    "<pre><code>" +
+    esc(code.replace(/\n$/, "")) +
+    "</code></pre></div>"
+  );
+}
+
+// Small block parser: fenced code, headings, lists, quotes, rules, paragraphs.
+function renderMarkdown(src) {
+  const blocks = [];
+
+  const stash = (lang, code) => {
+    blocks.push({ lang, code });
+    return `\n\u0000${blocks.length - 1}\u0000\n`;
+  };
+
+  let text = src.replace(/```([\w+#.-]*)[ \t]*\r?\n([\s\S]*?)```/g, (_, lang, code) =>
+    stash(lang, code)
+  );
+
+  // A fence still being streamed: show it as a block rather than raw ticks.
+  const open = text.indexOf("```");
+  if (open !== -1) {
+    const rest = text.slice(open + 3);
+    const nl = rest.indexOf("\n");
+    const lang = (nl === -1 ? rest : rest.slice(0, nl)).trim();
+    const code = nl === -1 ? "" : rest.slice(nl + 1);
+    text = text.slice(0, open) + stash(lang, code);
+  }
+
+  const out = [];
+  let para = [];
+  let list = null;
+
+  const flushPara = () => {
+    if (!para.length) return;
+    out.push("<p>" + para.map(inline).join("<br>") + "</p>");
+    para = [];
+  };
+
+  const flushList = () => {
+    if (!list) return;
+    const tag = list.type;
+    out.push("<" + tag + ">" + list.items.map((i) => "<li>" + inline(i) + "</li>").join("") + "</" + tag + ">");
+    list = null;
+  };
+
+  const flushAll = () => {
+    flushPara();
+    flushList();
+  };
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.replace(/\s+$/, "");
+    const marker = line.match(/^\u0000(\d+)\u0000$/);
+
+    if (marker) {
+      flushAll();
+      const b = blocks[+marker[1]];
+      out.push(codeBlockHtml(b.lang, b.code));
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushAll();
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      flushAll();
+      out.push("<hr>");
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      flushAll();
+      const level = Math.min(heading[1].length + 2, 6);
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) {
+      flushPara();
+      if (!list || list.type !== "ul") {
+        flushList();
+        list = { type: "ul", items: [] };
+      }
+      list.items.push(bullet[1]);
+      continue;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ordered) {
+      flushPara();
+      if (!list || list.type !== "ol") {
+        flushList();
+        list = { type: "ol", items: [] };
+      }
+      list.items.push(ordered[1]);
+      continue;
+    }
+
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) {
+      flushAll();
+      out.push("<blockquote>" + inline(quote[1]) + "</blockquote>");
+      continue;
+    }
+
+    flushList();
+    para.push(line);
+  }
+
+  flushAll();
+  return out.join("");
+}
 
 // ---------------------------------------------------------------------- render
 
@@ -557,22 +942,35 @@ function addTurn(role, text) {
   empty.classList.add("hidden");
 
   const wrap = document.createElement("div");
-  wrap.className = "msg " + (role === "user" ? "user" : "bot");
+  wrap.className = "msg " + role;
 
-  const avatar = document.createElement("div");
-  avatar.className = "avatar";
-  avatar.textContent = role === "user" ? "you" : "ai";
+  if (role === "user") {
+    wrap.textContent = text;
+    chat.append(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    return wrap;
+  }
 
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
-  bubble.textContent = text;
-
-  wrap.append(avatar, bubble);
+  const md = document.createElement("div");
+  md.className = "md";
+  wrap.append(md);
   chat.append(wrap);
   chat.scrollTop = chat.scrollHeight;
-
-  return bubble;
+  return md;
 }
+
+chat.addEventListener("click", (e) => {
+  const btn = e.target.closest(".copy");
+  if (!btn) return;
+
+  const code = btn.closest(".code-block")?.querySelector("code");
+  if (!code || !navigator.clipboard) return;
+
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    btn.textContent = "Copied";
+    setTimeout(() => (btn.textContent = "Copy"), 1200);
+  }).catch(() => {});
+});
 
 // ------------------------------------------------------------------ generation
 
@@ -587,14 +985,24 @@ async function ask(question) {
   autosize();
 
   addTurn("user", question);
-  const bubble = addTurn("assistant", "");
+
+  const md = addTurn("bot", "");
   const cursor = document.createElement("span");
   cursor.className = "cursor";
-  bubble.append(cursor);
+  md.append(cursor);
 
   let raw = "";
   let chunks = 0;
+  let frame = null;
   const started = performance.now();
+
+  // Re-rendering on every token would thrash layout; coalesce to one paint.
+  const paint = () => {
+    frame = null;
+    md.innerHTML = renderMarkdown(raw);
+    md.append(cursor);
+    chat.scrollTop = chat.scrollHeight;
+  };
 
   const streamer = new TextStreamer(generator.tokenizer, {
     skip_prompt: true,
@@ -603,9 +1011,7 @@ async function ask(question) {
       if (cancelled) throw new Error("__cancel__");
       raw += text;
       chunks++;
-      bubble.textContent = raw.replace(SPECIAL, "");
-      bubble.append(cursor);
-      chat.scrollTop = chat.scrollHeight;
+      if (frame === null) frame = requestAnimationFrame(paint);
 
       const secs = (performance.now() - started) / 1000;
       if (secs > 0.4) {
@@ -626,27 +1032,31 @@ async function ask(question) {
       streamer,
     });
   } catch (err) {
-    if (!err.message.includes("__cancel__")) {
-      bubble.textContent = "Error: " + err.message;
-      bubble.style.color = "var(--danger)";
+    if (!String(err.message).includes("__cancel__")) {
+      if (frame !== null) cancelAnimationFrame(frame);
       cursor.remove();
+      md.innerHTML = "";
+      const p = document.createElement("p");
+      p.textContent = "Error: " + err.message;
+      p.style.color = "var(--error)";
+      md.append(p);
       finish();
       return;
     }
   }
 
+  if (frame !== null) cancelAnimationFrame(frame);
+  const answer = raw.trim();
+  md.innerHTML = renderMarkdown(answer);
   cursor.remove();
 
-  const answer = raw.replace(SPECIAL, "").trim();
   if (answer) {
-    bubble.textContent = answer;
     history.push({ role: "user", content: question });
     history.push({ role: "assistant", content: answer });
-    // Bound the prefill cost on long conversations.
+    // Keep the prefill bounded once a conversation grows.
     if (history.length > 8) history.splice(0, history.length - 8);
   } else {
-    bubble.textContent = "(stopped)";
-    bubble.style.color = "var(--fg-faint)";
+    md.innerHTML = '<p style="color:var(--secondary-label)">(stopped)</p>';
   }
 
   const total = (performance.now() - started) / 1000;
@@ -686,7 +1096,7 @@ input.addEventListener("keydown", (e) => {
 
 function autosize() {
   input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  input.style.height = Math.min(input.scrollHeight, 150) + "px";
 }
 
 input.addEventListener("input", autosize);
@@ -697,6 +1107,10 @@ document.querySelectorAll(".chip").forEach((chip) => {
     ask(chip.dataset.p);
   });
 });
+
+// ----------------------------------------------------------------------- boot
+
+probe().then(renderBadge);
 </script>
 </body>
 </html>
